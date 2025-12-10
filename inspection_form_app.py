@@ -14,8 +14,8 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
 # ========== 設定 ==========
-MANUAL_FILE = "93H62015_コエックス300フ_ロ_付合せ_検品包装作業.xlsx"
-MASTER_FILE = "検査者マスター.xlsx"
+MANUAL_FILE = "manual.xlsx"
+MASTER_FILE = "inspector_master.xlsx"
 OUTPUT_DIR = "."
 PHOTO_DIR = "photos"
 CONFIG_FILE = "app_config.json"
@@ -281,3 +281,4 @@ else:
 
 st.divider()
 st.caption("貸出検査フォーム v1.0 | Powered by Streamlit")
+
