@@ -159,7 +159,6 @@ with st.sidebar:
         selected_emails = st.multiselect(
             "送信先メールアドレス",
             emails_list,
-            default=default_idx if default_idx else []
         )
         
         if selected_emails:
@@ -281,5 +280,6 @@ else:
 
 st.divider()
 st.caption("入荷検査フォーム v1.0 | Powered by Streamlit")
+
 
 
