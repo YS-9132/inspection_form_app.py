@@ -106,24 +106,41 @@ def save_photo(uploaded_file, item_id):
         return None
 
 def create_excel_report(inspection_data, writer_name, reviewer_name, inspector_id, lot_no, in_no, inspection_date):
-    """検査結果Excelを作成"""
+    """検査結果Excelを作成（シンプル版）"""
     try:
-        wb = openpyxl.load_workbook(MANUAL_FILE)
+        # シンプルなExcelを作成
+        wb = openpyxl.Workbook()
         ws = wb.active
+        ws.title = "検査結果"
         
-        ws['D8'] = writer_name
-        ws['P8'] = reviewer_name
-        ws['D9'] = inspection_date
-        ws['P9'] = inspection_date
-        ws['D7'] = in_no
-        ws['P7'] = lot_no
+        # ヘッダー情報
+        ws['A1'] = "入荷検査結果"
+        ws['A3'] = "検査ID"
+        ws['B3'] = inspector_id
+        ws['A4'] = "IN.NO"
+        ws['B4'] = in_no
+        ws['A5'] = "ロットNO"
+        ws['B5'] = lot_no
+        ws['A6'] = "作業者"
+        ws['B6'] = writer_name
+        ws['A7'] = "確認者"
+        ws['B7'] = reviewer_name
+        ws['A8'] = "検査日"
+        ws['B8'] = inspection_date
         
-        result_col = 22
-        for idx, (item_id, result) in enumerate(inspection_data.items()):
-            row_num = 11 + idx
-            if row_num < 45:
-                check_value = "☑可" if result.get('pass') else "☑否"
-                ws.cell(row=row_num, column=result_col).value = check_value
+        # 検査項目結果
+        ws['A10'] = "No."
+        ws['B10'] = "カテゴリ"
+        ws['C10'] = "検査項目"
+        ws['D10'] = "判定"
+        
+        row = 11
+        for idx, (item_id, data) in enumerate(inspection_data.items(), 1):
+            ws[f'A{row}'] = idx
+            ws[f'B{row}'] = data['category']
+            ws[f'C{row}'] = data['description']
+            ws[f'D{row}'] = "合格" if data.get('pass') else "不合格"
+            row += 1
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_file = f"検査結果_{timestamp}.xlsx"
@@ -285,6 +302,7 @@ else:
 
 st.divider()
 st.caption("入荷検査フォーム v1.0 | Powered by Streamlit")
+
 
 
 
