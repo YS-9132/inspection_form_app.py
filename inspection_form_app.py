@@ -1,4 +1,4 @@
-# 以下のコード全部をコピーしてGitHubに貼り付けてください
+
 import streamlit as st
 import pandas as pd
 import openpyxl
@@ -34,7 +34,7 @@ if 'uploaded_photos' not in st.session_state:
 # ========== 関数定義 ==========
 
 def load_manual():
-    """貸出検査マニュアルを読み込む"""
+    """入荷検査マニュアルを読み込む"""
     try:
         wb = openpyxl.load_workbook(MANUAL_FILE)
         ws = wb.worksheets[0]
@@ -136,8 +136,8 @@ def create_excel_report(inspection_data, writer_name, reviewer_name, inspector_i
 
 # ========== UI ==========
 
-st.set_page_config(page_title="貸出検査フォーム", layout="wide")
-st.title("🔍 貸出検査フォーム")
+st.set_page_config(page_title="入荷検査フォーム", layout="wide")
+st.title("🔍 入荷検査フォーム")
 
 # サイドバー設定
 with st.sidebar:
@@ -280,5 +280,6 @@ else:
             st.info("検査項目に回答してから確認タブをご覧ください")
 
 st.divider()
-st.caption("貸出検査フォーム v1.0 | Powered by Streamlit")
+st.caption("入荷検査フォーム v1.0 | Powered by Streamlit")
+
 
