@@ -152,7 +152,14 @@ with st.sidebar:
         writer_name = st.selectbox("作業者名", writer_names, key="writer")
         
         reviewer_name = st.selectbox("確認者名", writer_names, key="reviewer")
+
+        # -------------------------------------------------------
         
+        raw_emails = masters['メールアドレス'].dropna().astype(str)
+        emails_list = [x.strip() for x in raw_emails if x.strip() != ""]
+        emails_list = list(set(emails_list)) # 重複排除
+
+        # -------------------------------------------------------
         st.subheader("📧 メール送信先")
         selected_emails = st.multiselect(
             "送信先メールアドレス",
@@ -278,6 +285,7 @@ else:
 
 st.divider()
 st.caption("入荷検査フォーム v1.0 | Powered by Streamlit")
+
 
 
 
