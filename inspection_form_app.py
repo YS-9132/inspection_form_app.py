@@ -162,7 +162,6 @@ with st.sidebar:
         
         if selected_emails:
             save_config(selected_emails)
-            st.session_state.selected_emails = selected_emails
     else:
         st.error("検査者マスターが見つかりません")
         writer_name = reviewer_name = None
@@ -279,6 +278,7 @@ else:
 
 st.divider()
 st.caption("入荷検査フォーム v1.0 | Powered by Streamlit")
+
 
 
 
