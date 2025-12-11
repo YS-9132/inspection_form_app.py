@@ -154,11 +154,10 @@ with st.sidebar:
         reviewer_name = st.selectbox("確認者名", writer_names, key="reviewer")
         
         st.subheader("📧 メール送信先")
-        prev_emails = load_config()
-        default_idx = [i for i, e in enumerate(emails_list) if e in prev_emails]
         selected_emails = st.multiselect(
             "送信先メールアドレス",
             emails_list,
+            key="selected_emails"
         )
         
         if selected_emails:
@@ -280,6 +279,7 @@ else:
 
 st.divider()
 st.caption("入荷検査フォーム v1.0 | Powered by Streamlit")
+
 
 
 
