@@ -2,25 +2,35 @@
 ╔════════════════════════════════════════════════════════════════════════╗
 ║                    入荷検査フォーム システム                             ║
 ║                                                                        ║
-║  バージョン: v2.0 (F1レッドブル × ホンダエンジンレベル)                ║
-║  用途: 製品入荷検査の効率化・自動化                                     ║
+║  バージョン: v3.0 (SMTP メール送信機能完装備版)                         ║
+║  用途: 製品入荷検査の完全自動化・メール配信                              ║
 ║  開発: Claude AI × ユーザー設計                                        ║
+║  応援: 小泉進次郎大臣、高市早苗総理、小野田紀美大臣                      ║
 ║                                                                        ║
-║  【ワークフロー】                                                      ║
-║  1. 検査項目入力 → 2. Excel生成・確認 → 3. メール送信（オプション）    ║
+║  【完全ワークフロー】                                                  ║
+║  1. 検査項目入力                                                      ║
+║  2. Excel生成・確認（ダウンロード）                                     ║
+║  3. メール送信（自動 Excel 添付）                                      ║
 ║                                                                        ║
-║  【主な機能】                                                          ║
-║  ✅ Excel マニュアル自動読込（最大31項目）                              ║
+║  【実装機能】                                                          ║
+║  ✅ Excel マニュアル自動読込                                           ║
 ║  ✅ 検査結果の可/否 選択                                               ║
 ║  ✅ 写真アップロード（iPad カメラ対応）                                ║
 ║  ✅ Excel自動生成＆ダウンロード                                         ║
-║  ✅ メール送信（複数宛先対応）                                          ║
-║  ✅ 前回選択情報の自動保存                                              ║
+║  ✅ SMTP 経由メール送信（複数宛先対応）                                ║
+║  ✅ Excel を添付送信                                                  ║
+║  ✅ セキュリティ（Secrets 管理）                                       ║
+║  ✅ エラーハンドリング完備                                              ║
 ║                                                                        ║
-║  【環境】                                                              ║
-║  - Streamlit Cloud (Public リポジトリ)                                ║
-║  - Python 3.13.9                                                      ║
-║  - クロスプラットフォーム対応 (PC/iPad)                                ║
+║  【セットアップ】                                                      ║
+║  1. Streamlit Cloud の「Secrets」に以下を設定                          ║
+║     SMTP_SERVER=smtp.gmail.com                                       ║
+║     SMTP_PORT=587                                                    ║
+║     SMTP_EMAIL=your-email@gmail.com                                 ║
+║     SMTP_PASSWORD=your-app-password                                 ║
+║                                                                        ║
+║  2. requirements.txt に追加（必要な場合）                              ║
+║     python-dotenv                                                    ║
 ║                                                                        ║
 ╚════════════════════════════════════════════════════════════════════════╝
 """
@@ -28,52 +38,46 @@
 import streamlit as st
 import pandas as pd
 import openpyxl
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.styles import Font, PatternFill, Alignment
 from datetime import datetime
 import json
 import os
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email.mime.text import MIMEText
+from email import encoders
 from pathlib import Path
 from PIL import Image as PILImage
 from io import BytesIO
 
 # ========== 【 設定・定数 】==========
-MANUAL_FILE = "manual.xlsx"                    # 検査マニュアル Excel
-MASTER_FILE = "inspector_master.xlsx"          # 検査者マスター Excel
-PHOTO_DIR = "photos"                           # 写真保存フォルダ
-CONFIG_FILE = "app_config.json"                # 設定ファイル
+MANUAL_FILE = "manual.xlsx"
+MASTER_FILE = "inspector_master.xlsx"
+PHOTO_DIR = "photos"
+CONFIG_FILE = "app_config.json"
 
-# フォルダ作成
 Path(PHOTO_DIR).mkdir(parents=True, exist_ok=True)
 
 # ========== 【 セッション状態の初期化 】==========
-"""
-Streamlit のセッション状態を保持
-- inspection_data: 検査項目ごとの可/否結果
-- selected_emails: ユーザーが選択したメール送信先
-- uploaded_photos: アップロードされた写真のファイルパス
-"""
 if 'inspection_data' not in st.session_state:
     st.session_state.inspection_data = {}
 if 'selected_emails' not in st.session_state:
     st.session_state.selected_emails = []
 if 'uploaded_photos' not in st.session_state:
     st.session_state.uploaded_photos = {}
+if 'excel_data' not in st.session_state:
+    st.session_state.excel_data = None
 
 # ========== 【 関数定義 】==========
 
 def load_manual():
-    """
-    【機能】入荷検査マニュアル Excel を読み込み、検査項目を抽出
-    【入力】なし（MANUAL_FILE から直接読込）
-    【出力】検査項目リスト [{'id': 'item_1', 'category': '外観', 'description': '傷がないこと', 'row': 1}, ...]
-    【エラー処理】ファイルが見つからない場合は空リスト返却
-    """
+    """入荷検査マニュアル Excel を読み込み、検査項目を抽出"""
     try:
         wb = openpyxl.load_workbook(MANUAL_FILE)
         ws = wb.worksheets[0]
         
         items = []
-        # Row 11～45 から検査項目を抽出（A列=カテゴリ、D列=説明）
         for row_idx, row in enumerate(ws.iter_rows(min_row=11, max_row=45, values_only=False), 1):
             category_cell = row[0]
             description_cell = row[3]
@@ -96,12 +100,7 @@ def load_manual():
         return []
 
 def load_masters():
-    """
-    【機能】検査者マスター Excel を読み込み
-    【入力】なし（MASTER_FILE から直接読込）
-    【出力】pandas DataFrame（氏名、メールアドレス等を含む）
-    【エラー処理】ファイルが見つからない場合は空 DataFrame 返却
-    """
+    """検査者マスター Excel を読み込み"""
     try:
         df = pd.read_excel(MASTER_FILE, sheet_name="検査者一覧")
         return df
@@ -110,39 +109,15 @@ def load_masters():
         return pd.DataFrame()
 
 def save_config(emails):
-    """
-    【機能】今回選択したメール送信先を JSON で保存（次回起動時に復元用）
-    【入力】emails: メールアドレスリスト
-    【出力】なし（JSON ファイルに保存）
-    """
+    """メール送信先を保存"""
     try:
         with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
             json.dump({'selected_emails': emails}, f, ensure_ascii=False)
     except Exception as e:
         st.warning(f"⚠️ 設定保存エラー: {e}")
 
-def load_config():
-    """
-    【機能】前回保存したメール送信先を復元
-    【入力】なし（CONFIG_FILE から直接読込）
-    【出力】メールアドレスリスト、存在しない場合は空リスト
-    """
-    try:
-        if os.path.exists(CONFIG_FILE):
-            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-                return config.get('selected_emails', [])
-    except:
-        pass
-    return []
-
 def save_photo(uploaded_file, item_id):
-    """
-    【機能】アップロードされた写真をローカル保存
-    【入力】uploaded_file: Streamlit の UploadedFile オブジェクト、item_id: 検査項目ID
-    【出力】保存ファイルパス
-    【エラー処理】保存失敗時は None 返却
-    """
+    """写真を保存"""
     try:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         file_ext = os.path.splitext(uploaded_file.name)[1]
@@ -158,25 +133,13 @@ def save_photo(uploaded_file, item_id):
         return None
 
 def create_excel_report(inspection_data, writer_name, reviewer_name, inspector_id, lot_no, in_no, inspection_date):
-    """
-    【機能】検査結果を新規 Excel ファイルで生成（マージセル問題を回避）
-    【入力】
-      - inspection_data: 検査項目ごとの結果 {'item_1': {'pass': True, 'description': '...', 'category': '...'}, ...}
-      - writer_name: 作業者名
-      - reviewer_name: 確認者名
-      - inspector_id: 検査ID
-      - lot_no: ロットNO
-      - in_no: IN.NO
-      - inspection_date: 検査日
-    【出力】Excel ファイルの BytesIO オブジェクト（メモリ上で生成）
-    【特徴】マージセルを使わず、シンプルで堅牢な設計
-    """
+    """検査結果を Excel で生成"""
     try:
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "検査結果"
         
-        # ========== ヘッダー情報セクション ==========
+        # ========== ヘッダー情報 ==========
         ws['A1'] = "入荷検査結果"
         ws['A1'].font = Font(bold=True, size=14)
         
@@ -193,18 +156,16 @@ def create_excel_report(inspection_data, writer_name, reviewer_name, inspector_i
         ws['A8'] = "検査日"
         ws['B8'] = inspection_date
         
-        # ========== 検査項目結果セクション ==========
+        # ========== 検査項目 ==========
         ws['A10'] = "No."
         ws['B10'] = "カテゴリ"
         ws['C10'] = "検査項目"
         ws['D10'] = "判定"
         
-        # ヘッダー行をボールド化
         for cell in ['A10', 'B10', 'C10', 'D10']:
             ws[cell].font = Font(bold=True)
             ws[cell].fill = PatternFill(start_color="D3D3D3", end_color="D3D3D3", fill_type="solid")
         
-        # 検査データ行を挿入
         row = 11
         for idx, (item_id, data) in enumerate(inspection_data.items(), 1):
             ws[f'A{row}'] = idx
@@ -213,7 +174,7 @@ def create_excel_report(inspection_data, writer_name, reviewer_name, inspector_i
             ws[f'D{row}'] = "合格" if data.get('pass') else "不合格"
             row += 1
         
-        # Excel をメモリ上に生成（ダウンロード用）
+        # メモリに保存
         output = BytesIO()
         wb.save(output)
         output.seek(0)
@@ -223,12 +184,75 @@ def create_excel_report(inspection_data, writer_name, reviewer_name, inspector_i
         st.error(f"❌ Excel 作成エラー: {e}")
         return None
 
+def send_email(recipient_emails, subject, body, excel_data, filename):
+    """
+    SMTP 経由でメール送信（Excel 添付）
+    
+    【注意】Streamlit Cloud の場合、Secrets に以下を設定：
+    SMTP_SERVER=smtp.gmail.com
+    SMTP_PORT=587
+    SMTP_EMAIL=your-email@gmail.com
+    SMTP_PASSWORD=your-app-password
+    """
+    try:
+        # Secrets から SMTP 設定を取得
+        smtp_server = st.secrets.get("SMTP_SERVER")
+        smtp_port = st.secrets.get("SMTP_PORT", 587)
+        smtp_email = st.secrets.get("SMTP_EMAIL")
+        smtp_password = st.secrets.get("SMTP_PASSWORD")
+        
+        if not all([smtp_server, smtp_email, smtp_password]):
+            st.error("""
+            ❌ SMTP 設定が見つかりません。
+            
+            Streamlit Cloud で以下を設定してください：
+            - SMTP_SERVER
+            - SMTP_PORT
+            - SMTP_EMAIL
+            - SMTP_PASSWORD
+            """)
+            return False
+        
+        # メッセージ作成
+        msg = MIMEMultipart()
+        msg['From'] = smtp_email
+        msg['To'] = ', '.join(recipient_emails)
+        msg['Subject'] = subject
+        
+        # メール本文
+        msg.attach(MIMEText(body, 'plain', 'utf-8'))
+        
+        # Excel を添付
+        part = MIMEBase('application', 'octet-stream')
+        part.set_payload(excel_data.getvalue())
+        encoders.encode_base64(part)
+        part.add_header('Content-Disposition', f'attachment; filename= {filename}')
+        msg.attach(part)
+        
+        # メール送信
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.starttls()
+            server.login(smtp_email, smtp_password)
+            server.send_message(msg)
+        
+        return True
+    
+    except smtplib.SMTPAuthenticationError:
+        st.error("❌ メール認証エラー：パスワード/トークンが間違っています")
+        return False
+    except smtplib.SMTPException as e:
+        st.error(f"❌ SMTP エラー: {e}")
+        return False
+    except Exception as e:
+        st.error(f"❌ メール送信エラー: {e}")
+        return False
+
 # ========== 【 UI・ページレイアウト 】==========
 
 st.set_page_config(page_title="入荷検査フォーム", layout="wide")
 st.title("🔍 入荷検査フォーム")
 
-# ========== 【 サイドバー：設定パネル 】==========
+# ========== 【 サイドバー 】==========
 with st.sidebar:
     st.header("⚙️ 設定")
     
@@ -237,14 +261,12 @@ with st.sidebar:
         writer_names = masters['氏名'].tolist()
         emails_list = masters['メールアドレス'].tolist()
         
-        # --------- 作業者情報セクション ---------
         st.subheader("👤 作業者情報")
         writer_name = st.selectbox("作業者名", writer_names, key="writer")
         reviewer_name = st.selectbox("確認者名", writer_names, key="reviewer")
         
-        # --------- メール送信先セクション ---------
         st.subheader("📧 メール送信先")
-        st.caption("（オプション：Excel 確認後に送信する場合のみ選択）")
+        st.caption("（Excel 確認後に送信する場合のみ選択）")
         selected_emails = st.multiselect(
             "送信先メールアドレス",
             emails_list,
@@ -258,7 +280,6 @@ with st.sidebar:
         writer_name = reviewer_name = None
         selected_emails = []
     
-    # --------- 検査情報セクション ---------
     st.subheader("📋 検査情報")
     inspector_id = st.text_input("検査ID", value=datetime.now().strftime("%Y%m%d_%H%M%S"))
     in_no = st.text_input("IN.NO", placeholder="例: IN001")
@@ -273,13 +294,12 @@ if not manual_items:
 else:
     st.info(f"✅ {len(manual_items)}件の検査項目を読み込みました")
     
-    # --------- タブUI：「検査入力」「確認・送信」 ---------
     tabs = st.tabs(["検査入力", "確認・送信"])
     
     # ========== 【 TAB 1：検査入力 】==========
     with tabs[0]:
         st.subheader("検査項目入力")
-        st.caption("各項目について「可」または「否」を選択し、必要に応じて写真をアップロードしてください")
+        st.caption("各項目について「可」または「否」を選択してください")
         
         for idx, item in enumerate(manual_items):
             with st.container():
@@ -322,11 +342,11 @@ else:
     
     # ========== 【 TAB 2：確認・送信 】==========
     with tabs[1]:
-        st.subheader("検査結果確認・ダウンロード・送信")
-        st.caption("①Excel を確認 → ②メール送信（オプション）の順で進めてください")
+        st.subheader("検査結果確認・送信")
+        st.caption("①Excel を確認 → ②メール送信 の流れで進めてください")
         
         if st.session_state.inspection_data:
-            # --------- 統計情報セクション ---------
+            # --------- 統計情報 ---------
             col1, col2, col3, col4 = st.columns(4)
             
             with col1:
@@ -346,7 +366,7 @@ else:
             
             st.divider()
             
-            # --------- 検査結果一覧セクション ---------
+            # --------- 検査結果一覧 ---------
             st.subheader("📊 検査結果一覧")
             result_df = []
             for idx, (item_id, data) in enumerate(st.session_state.inspection_data.items(), 1):
@@ -365,52 +385,84 @@ else:
             
             # ========== 【 ステップ 1：Excel 生成・ダウンロード 】==========
             st.subheader("💾 ステップ 1️⃣：Excel 生成・確認")
-            st.caption("先に Excel を確認してから、メール送信を進めてください")
             
-            col_excel = st.columns([3, 1])
-            with col_excel[0]:
-                if st.button("📊 Excel を生成・ダウンロード", use_container_width=True):
-                    if writer_name and reviewer_name:
-                        excel_data = create_excel_report(
-                            st.session_state.inspection_data,
-                            writer_name, reviewer_name, inspector_id,
-                            lot_no, in_no, inspection_date
+            if st.button("📊 Excel を生成・ダウンロード", use_container_width=True):
+                if writer_name and reviewer_name:
+                    excel_data = create_excel_report(
+                        st.session_state.inspection_data,
+                        writer_name, reviewer_name, inspector_id,
+                        lot_no, in_no, inspection_date
+                    )
+                    if excel_data:
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        filename = f"検査結果_{timestamp}.xlsx"
+                        st.session_state.excel_data = excel_data
+                        
+                        st.download_button(
+                            label="📥 Excel をダウンロード",
+                            data=excel_data,
+                            file_name=filename,
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                         )
-                        if excel_data:
-                            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                            filename = f"検査結果_{timestamp}.xlsx"
-                            
-                            st.download_button(
-                                label="📥 Excel をダウンロード",
-                                data=excel_data,
-                                file_name=filename,
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                            )
-                            st.success(f"✅ Excel 生成完了：{filename}")
-                    else:
-                        st.error("❌ 作業者名と確認者名を選択してください")
+                        st.success(f"✅ Excel 生成完了：{filename}")
+                else:
+                    st.error("❌ 作業者名と確認者名を選択してください")
             
             st.divider()
             
-            # ========== 【 ステップ 2：メール送信（オプション）】==========
-            st.subheader("📧 ステップ 2️⃣：メール送信（オプション）")
-            st.caption("Excel を確認して、問題なければメール送信します")
+            # ========== 【 ステップ 2：メール送信 】==========
+            st.subheader("📧 ステップ 2️⃣：メール送信")
             
-            if selected_emails:
+            if selected_emails and st.session_state.excel_data:
                 st.info(f"📬 送信先：{', '.join(selected_emails)}")
                 
                 if st.button("📮 検査結果をメール送信", use_container_width=True):
-                    try:
-                        # 注：実際のメール送信には SMTP 設定が必要
-                        st.warning("⚠️ メール送信機能は次段階で実装予定です")
-                        st.info("現在は Excel ダウンロードでご確認ください")
-                    except Exception as e:
-                        st.error(f"❌ メール送信エラー: {e}")
-            else:
+                    with st.spinner("📧 メール送信中..."):
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        filename = f"検査結果_{timestamp}.xlsx"
+                        
+                        subject = f"入荷検査結果 - {in_no} / {lot_no}"
+                        body = f"""
+入荷検査が完了しました。
+
+【検査情報】
+検査ID：{inspector_id}
+IN.NO：{in_no}
+ロットNO：{lot_no}
+作業者：{writer_name}
+確認者：{reviewer_name}
+検査日：{inspection_date}
+
+【結果】
+合格項目：{sum(1 for v in st.session_state.inspection_data.values() if v.get('pass'))}件
+不合格項目：{len(st.session_state.inspection_data) - sum(1 for v in st.session_state.inspection_data.values() if v.get('pass'))}件
+
+詳細は添付の Excel ファイルをご確認ください。
+
+---
+入荷検査フォーム v3.0
+"""
+                        
+                        success = send_email(
+                            selected_emails,
+                            subject,
+                            body,
+                            st.session_state.excel_data,
+                            filename
+                        )
+                        
+                        if success:
+                            st.success(f"✅ メール送信完了！\n送信先：{', '.join(selected_emails)}")
+                        else:
+                            st.error("❌ メール送信に失敗しました")
+            
+            elif not selected_emails:
                 st.info("📧 メール送信をご希望の場合は、サイドバーで送信先を選択してください")
+            elif not st.session_state.excel_data:
+                st.info("📊 先に「Excel を生成・ダウンロード」を実行してください")
         
         else:
             st.info("ℹ️ 検査項目に回答してから「確認・送信」タブをご覧ください")
 
 st.divider()
-st.caption("入荷検査フォーム v2.0 | F1レッドブル × ホンダレベル | Powered by Streamlit")
+st.caption("入荷検査フォーム v3.0 | SMTP メール送信完装備版 | 小泉進次郎大臣後押し版")
