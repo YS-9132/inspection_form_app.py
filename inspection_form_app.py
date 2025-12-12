@@ -87,9 +87,8 @@ def load_manual():
             category_cell = row[0]
             description_cell = row[3]
             
-            # ▼▼▼▼▼ 修正箇所: 行全体をチェックする ▼▼▼▼▼
+            # ▼▼▼▼▼ 修正箇所: 判定ロジックを修正し、次の行へジャンプさせる ▼▼▼▼▼
             
-            # その行のすべてのセルを結合して一つの文字列にする (row: openpyxl.cell.Cell のタプル)
             row_content = ""
             for cell in row:
                 if cell.value is not None:
@@ -99,7 +98,6 @@ def load_manual():
             # 判定キーワードを定義し、全角半角のブレを防ぐためにクリーニング
             EXCLUDE_KEYWORDS = ["作成部署", "作成者"]
             
-            # row_content からスペース、コロンを除去し、すべて小文字に統一
             cleaned_row_content = (
                 row_content
                 .replace(" ", "")  # 半角スペース除去
@@ -109,11 +107,16 @@ def load_manual():
                 .lower()           # 小文字に統一
             )
 
-            # 検査項目として不適切な行を判定
+            # 検査項目として不適切な行を判定（ロジック変更）
+            is_excluded = False
             for keyword in EXCLUDE_KEYWORDS:
                 # クリーニングしたキーワードが、クリーニングした行の内容に含まれるかチェック
                 if keyword in cleaned_row_content:
-                    continue  # この行はスキップ
+                    is_excluded = True
+                    break # キーワードが見つかったら、内側のループを抜ける
+
+            if is_excluded:
+                continue # フラグがTrueなら、外側のループ（次の行）へスキップする
             
             # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
             
@@ -504,6 +507,7 @@ IN.NO：{in_no}
 
 st.divider()
 st.caption("入荷検査フォーム v3.0 | SMTP メール送信完装備版 | 小泉進次郎大臣後押し版")
+
 
 
 
