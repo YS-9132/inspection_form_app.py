@@ -83,42 +83,36 @@ def load_manual():
             # 1. 特定の行番号(30, 31)を除外
             if row_idx in [30, 31]:
                 continue
+            
+            # ▼▼▼▼▼ 修正箇所: any() でシンプルかつ確実に除外するロジック ▼▼▼▼▼
+            
+            # 1. その行のすべてのセルを結合して一つの文字列にする
+            # (Noneのセルは空文字列にして結合し、例外を防ぐ)
+            row_content_list = [str(cell.value or "") for cell in row]
+            row_content_raw = " ".join(row_content_list)
 
-            category_cell = row[0]
-            description_cell = row[3]
-            
-            # ▼▼▼▼▼ 修正箇所: 判定ロジックを修正し、次の行へジャンプさせる ▼▼▼▼▼
-            
-            row_content = ""
-            for cell in row:
-                if cell.value is not None:
-                    # セルの値を文字列化し、前後の空白を除去してから結合
-                    row_content += str(cell.value).strip() 
-
-            # 判定キーワードを定義し、全角半角のブレを防ぐためにクリーニング
-            EXCLUDE_KEYWORDS = ["作成部署", "作成者"]
-            
+            # 2. 徹底的なクリーニング (スペース、コロンを全て削除し、小文字化)
             cleaned_row_content = (
-                row_content
+                row_content_raw
                 .replace(" ", "")  # 半角スペース除去
                 .replace("　", "") # 全角スペース除去
                 .replace("：", "") # 全角コロン除去
                 .replace(":", "")  # 半角コロン除去
-                .lower()           # 小文字に統一
+                .strip()
+                .lower()
             )
 
-            # 検査項目として不適切な行を判定（ロジック変更）
-            is_excluded = False
-            for keyword in EXCLUDE_KEYWORDS:
-                # クリーニングしたキーワードが、クリーニングした行の内容に含まれるかチェック
-                if keyword in cleaned_row_content:
-                    is_excluded = True
-                    break # キーワードが見つかったら、内側のループを抜ける
-
-            if is_excluded:
-                continue # フラグがTrueなら、外側のループ（次の行）へスキップする
+            # 3. 除外キーワードリスト
+            EXCLUDE_KEYWORDS_CLEAN = ["作成部署", "作成者"]
             
+            # クリーニングした文字列の中にいずれかのキーワードが含まれていれば、次の行へスキップ
+            if any(keyword in cleaned_row_content for keyword in EXCLUDE_KEYWORDS_CLEAN):
+                continue # <-- これがメインループを次の行に進める
+
             # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
+
+            category_cell = row[0]
+            description_cell = row[3]
             
             # 検査項目として有効なデータがあるかチェック（既存ロジック）
             if category_cell.value or description_cell.value:
@@ -507,6 +501,7 @@ IN.NO：{in_no}
 
 st.divider()
 st.caption("入荷検査フォーム v3.0 | SMTP メール送信完装備版 | 小泉進次郎大臣後押し版")
+
 
 
 
