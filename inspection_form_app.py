@@ -2,10 +2,10 @@
 ╔════════════════════════════════════════════════════════════════════════╗
 ║                    入荷検査フォーム システム                             ║
 ║                                                                        ║
-║  バージョン: v3.3                                                       ║
-║  【v3.3 修正内容】                                                     ║
+║  バージョン: v3.4                                                       ║
+║  【v3.4 修正内容】                                                     ║
+║  ✅ 結合セル対応（MergedCell エラー修正）                               ║
 ║  ✅ 元のマニュアルフォーマットに直接書き込み                            ║
-║  ✅ 「□可　□否」→「☑可」「☑否」に書き換え                            ║
 ║  ✅ 写真は別シートにカテゴリ別で配置                                    ║
 ║                                                                        ║
 ╚════════════════════════════════════════════════════════════════════════╝
@@ -16,6 +16,7 @@ import pandas as pd
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.drawing.image import Image as XLImage
+from openpyxl.utils import get_column_letter
 from datetime import datetime
 import json
 import os
@@ -68,6 +69,57 @@ def normalize_email(email):
     normalized = normalized.strip().replace(" ", "").replace("　", "")
     return normalized
 
+def safe_write_cell(ws, cell_address, value):
+    """
+    結合セルを考慮して安全にセルに書き込む
+    """
+    try:
+        cell = ws[cell_address]
+        # 結合セルの場合、左上のセルを探す
+        for merged_range in ws.merged_cells.ranges:
+            if cell.coordinate in merged_range:
+                # 結合範囲の左上セルを取得
+                min_col, min_row, max_col, max_row = merged_range.bounds
+                top_left_cell = ws.cell(row=min_row, column=min_col)
+                top_left_cell.value = value
+                return True
+        # 結合セルでない場合、直接書き込み
+        cell.value = value
+        return True
+    except Exception as e:
+        # エラーが発生しても続行
+        return False
+
+def find_and_write_header(ws, search_text, value, search_range=(1, 10)):
+    """
+    ヘッダーテキストを検索し、その右のセルに値を書き込む
+    """
+    for row in range(search_range[0], search_range[1] + 1):
+        for col in range(1, 20):
+            try:
+                cell = ws.cell(row=row, column=col)
+                if cell.value and search_text in str(cell.value):
+                    # 右隣のセルに書き込み
+                    for next_col in range(col + 1, col + 5):
+                        try:
+                            next_cell = ws.cell(row=row, column=next_col)
+                            # 結合セルかチェック
+                            is_merged = False
+                            for merged_range in ws.merged_cells.ranges:
+                                if next_cell.coordinate in merged_range:
+                                    min_col, min_row, max_col, max_row = merged_range.bounds
+                                    ws.cell(row=min_row, column=min_col).value = value
+                                    is_merged = True
+                                    return True
+                            if not is_merged:
+                                next_cell.value = value
+                                return True
+                        except:
+                            continue
+            except:
+                continue
+    return False
+
 # ========== 【 関数定義 】==========
 
 def load_manual():
@@ -114,7 +166,6 @@ def load_manual():
                 description = description_cell.value or ""
                 
                 if str(description).strip():
-                    # 実際のExcel行番号を保存（min_row=11なので、row_idx + 10）
                     actual_row = row_idx + 10
                     items.append({
                         'id': f"item_{row_idx}",
@@ -159,26 +210,16 @@ def create_excel_report(inspection_data, photo_bytes, manual_items, writer_name,
         wb = openpyxl.load_workbook(MANUAL_FILE)
         ws = wb.worksheets[0]
         
-        # ========== ヘッダー情報を書き込み ==========
-        # IN.no (B4セル付近を探す)
-        ws['B4'] = in_no
-        # OR.no (O4セル付近)
-        ws['O4'] = ""  # OR.noがあれば
-        # 本体S/N (B5セル付近)
-        ws['B5'] = inspector_id
-        # ロットNo (O5セル付近)
-        ws['O5'] = lot_no
-        # 入荷日 (B6セル付近)
-        ws['B6'] = str(inspection_date)
-        # 検査日 (O6セル付近)
-        ws['O6'] = str(inspection_date)
-        
-        # 作業者印・確認者印 (U1, W1付近)
-        # 位置は元のフォーマットに合わせて調整が必要
+        # ========== ヘッダー情報を書き込み（検索して書き込み）==========
+        find_and_write_header(ws, "IN.no", in_no, (1, 10))
+        find_and_write_header(ws, "IN.no", in_no, (1, 10))
+        find_and_write_header(ws, "OR.no", "", (1, 10))
+        find_and_write_header(ws, "本体S/N", inspector_id, (1, 10))
+        find_and_write_header(ws, "ロットNo", lot_no, (1, 10))
+        find_and_write_header(ws, "入荷日", str(inspection_date), (1, 10))
+        find_and_write_header(ws, "検査日", str(inspection_date), (1, 10))
         
         # ========== 検査結果を書き込み ==========
-        # V, W, X, Y列に「□可　　　□否」があるので、結果に応じて書き換え
-        
         for item in manual_items:
             item_id = item['id']
             excel_row = item['excel_row']
@@ -186,25 +227,33 @@ def create_excel_report(inspection_data, photo_bytes, manual_items, writer_name,
             if item_id in inspection_data:
                 is_pass = inspection_data[item_id].get('pass', True)
                 
-                # V列（22列目）の内容を確認して書き換え
-                # 元のセルを探す（V列 = 22）
-                for col in range(21, 26):  # U, V, W, X, Y列をチェック
-                    cell = ws.cell(row=excel_row, column=col)
-                    if cell.value:
-                        cell_value = str(cell.value)
-                        if '□可' in cell_value or '□否' in cell_value:
-                            if is_pass:
-                                # □可 → ☑可、□否 → □否
-                                new_value = cell_value.replace('□可', '☑可')
-                            else:
-                                # □可 → □可、□否 → ☑否
-                                new_value = cell_value.replace('□否', '☑否')
-                            cell.value = new_value
-                            break
+                # V〜Y列（22〜25列）をチェックして「□可　□否」を探す
+                for col in range(21, 26):
+                    try:
+                        cell = ws.cell(row=excel_row, column=col)
+                        
+                        # 結合セルの場合、左上セルを取得
+                        actual_cell = cell
+                        for merged_range in ws.merged_cells.ranges:
+                            if cell.coordinate in merged_range:
+                                min_col, min_row, max_col, max_row = merged_range.bounds
+                                actual_cell = ws.cell(row=min_row, column=min_col)
+                                break
+                        
+                        if actual_cell.value:
+                            cell_value = str(actual_cell.value)
+                            if '□可' in cell_value or '□否' in cell_value:
+                                if is_pass:
+                                    new_value = cell_value.replace('□可', '☑可')
+                                else:
+                                    new_value = cell_value.replace('□否', '☑否')
+                                actual_cell.value = new_value
+                                break
+                    except Exception as cell_error:
+                        continue
         
         # ========== 写真シートを作成 ==========
         if photo_bytes:
-            # 新しいシートを作成
             ws_photo = wb.create_sheet(title="検査写真")
             
             # ヘッダー
@@ -222,7 +271,6 @@ def create_excel_report(inspection_data, photo_bytes, manual_items, writer_name,
                 ws_photo[cell].fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
                 ws_photo[cell].font = Font(bold=True, color="FFFFFF")
             
-            # 列幅設定
             ws_photo.column_dimensions['A'].width = 6
             ws_photo.column_dimensions['B'].width = 15
             ws_photo.column_dimensions['C'].width = 40
@@ -242,30 +290,25 @@ def create_excel_report(inspection_data, photo_bytes, manual_items, writer_name,
                     ws_photo[f'C{row}'] = item['description'][:50]
                     
                     try:
-                        # 画像を処理
                         img_data = BytesIO(photo_bytes[item_id])
                         img = PILImage.open(img_data)
                         
-                        # 画像をリサイズ（幅150pxに）
                         max_width = 150
                         ratio = max_width / img.width
                         new_height = int(img.height * ratio)
                         img = img.resize((max_width, new_height))
                         
-                        # BytesIOに保存
                         img_buffer = BytesIO()
                         img.save(img_buffer, format='PNG')
                         img_buffer.seek(0)
                         
-                        # Excelに埋め込み
                         xl_img = XLImage(img_buffer)
                         ws_photo.add_image(xl_img, f'D{row}')
                         
-                        # 行の高さを調整
                         ws_photo.row_dimensions[row].height = max(new_height * 0.75, 100)
                         
                     except Exception as img_error:
-                        ws_photo[f'D{row}'] = f"写真読込エラー: {img_error}"
+                        ws_photo[f'D{row}'] = f"写真読込エラー"
                     
                     row += 1
             
@@ -543,7 +586,7 @@ IN.NO: {in_no}
 - シート2: 検査写真
 
 ---
-入荷検査フォーム v3.3
+入荷検査フォーム v3.4
 """
                         
                         st.session_state.excel_data.seek(0)
@@ -568,4 +611,4 @@ IN.NO: {in_no}
             st.info("ℹ️ 検査項目に回答してから「確認・送信」タブをご覧ください")
 
 st.divider()
-st.caption("入荷検査フォーム v3.3 | 元フォーマット対応版")
+st.caption("入荷検査フォーム v3.4 | 結合セル対応版")
