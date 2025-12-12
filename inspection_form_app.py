@@ -2,13 +2,11 @@
 ╔════════════════════════════════════════════════════════════════════════╗
 ║                    入荷検査フォーム システム                             ║
 ║                                                                        ║
-║  バージョン: v3.1 (バグ修正版)                                          ║
-║  用途: 製品入荷検査の完全自動化・メール配信                              ║
-║  開発: Claude AI × ユーザー設計                                        ║
-║                                                                        ║
-║  【v3.1 修正内容】                                                     ║
-║  ✅ 「作製部署」「作成者」の除外ロジック修正                            ║
-║  ✅ メール送信時のエンコードエラー修正                                  ║
+║  バージョン: v3.2                                                       ║
+║  【v3.2 修正内容】                                                     ║
+║  ✅ 全角文字を自動的に半角に変換                                        ║
+║  ✅ 写真をExcelに埋め込み                                               ║
+║  ✅ メール送信のエンコード完全対応                                      ║
 ║                                                                        ║
 ╚════════════════════════════════════════════════════════════════════════╝
 """
@@ -17,6 +15,7 @@ import streamlit as st
 import pandas as pd
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment
+from openpyxl.drawing.image import Image as XLImage
 from datetime import datetime
 import json
 import os
@@ -29,6 +28,7 @@ from email.header import Header
 from pathlib import Path
 from PIL import Image as PILImage
 from io import BytesIO
+import unicodedata
 
 # ========== 【 設定・定数 】==========
 MANUAL_FILE = "manual.xlsx"
@@ -45,8 +45,29 @@ if 'selected_emails' not in st.session_state:
     st.session_state.selected_emails = []
 if 'uploaded_photos' not in st.session_state:
     st.session_state.uploaded_photos = {}
+if 'photo_bytes' not in st.session_state:
+    st.session_state.photo_bytes = {}
 if 'excel_data' not in st.session_state:
     st.session_state.excel_data = None
+
+# ========== 【 ユーティリティ関数 】==========
+
+def normalize_text(text):
+    """全角英数字・記号を半角に変換"""
+    if text is None:
+        return ""
+    # NFKC正規化で全角→半角変換
+    return unicodedata.normalize('NFKC', str(text))
+
+def normalize_email(email):
+    """メールアドレスの全角文字を半角に変換"""
+    if email is None:
+        return ""
+    # 全角→半角変換
+    normalized = unicodedata.normalize('NFKC', str(email))
+    # 余分な空白を除去
+    normalized = normalized.strip().replace(" ", "").replace("　", "")
+    return normalized
 
 # ========== 【 関数定義 】==========
 
@@ -59,21 +80,17 @@ def load_manual():
         items = []
         for row_idx, row in enumerate(ws.iter_rows(min_row=11, max_row=45, values_only=False), 1):
             
-            # 1. 特定の行番号(30, 31)を除外
             if row_idx in [30, 31]:
                 continue
 
             category_cell = row[0]
             description_cell = row[3]
             
-            # ▼▼▼▼▼ 修正箇所: 判定ロジックを修正 ▼▼▼▼▼
-            
             row_content = ""
             for cell in row:
                 if cell.value is not None:
                     row_content += str(cell.value).strip() 
 
-            # 【修正】判定キーワード - 「作製部署」と「作成部署」両方対応
             EXCLUDE_KEYWORDS = ["作製部署", "作成部署", "作成者", "作製者", "制定日", "改訂日", "版数", "承認"]
             
             cleaned_row_content = (
@@ -84,7 +101,6 @@ def load_manual():
                 .replace(":", "")
             )
 
-            # 検査項目として不適切な行を判定
             is_excluded = False
             for keyword in EXCLUDE_KEYWORDS:
                 if keyword in cleaned_row_content:
@@ -94,9 +110,6 @@ def load_manual():
             if is_excluded:
                 continue
             
-            # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
-            
-            # 検査項目として有効なデータがあるかチェック
             if category_cell.value or description_cell.value:
                 category = category_cell.value or ""
                 description = description_cell.value or ""
@@ -112,13 +125,16 @@ def load_manual():
         return items
 
     except Exception as e:
-        print(f"エラーが発生しました: {e}")
+        st.error(f"マニュアル読込エラー: {e}")
         return []
         
 def load_masters():
     """検査者マスター Excel を読み込み"""
     try:
         df = pd.read_excel(MASTER_FILE, sheet_name="検査者一覧")
+        # メールアドレスを正規化
+        if 'メールアドレス' in df.columns:
+            df['メールアドレス'] = df['メールアドレス'].apply(normalize_email)
         return df
     except Exception as e:
         st.error(f"❌ マスター読込エラー: {e}")
@@ -132,24 +148,8 @@ def save_config(emails):
     except Exception as e:
         st.warning(f"⚠️ 設定保存エラー: {e}")
 
-def save_photo(uploaded_file, item_id):
-    """写真を保存"""
-    try:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        file_ext = os.path.splitext(uploaded_file.name)[1]
-        filename = f"{item_id}_{timestamp}{file_ext}"
-        filepath = os.path.join(PHOTO_DIR, filename)
-        
-        with open(filepath, 'wb') as f:
-            f.write(uploaded_file.getbuffer())
-        
-        return filepath
-    except Exception as e:
-        st.error(f"❌ 写真保存エラー: {e}")
-        return None
-
-def create_excel_report(inspection_data, writer_name, reviewer_name, inspector_id, lot_no, in_no, inspection_date):
-    """検査結果を Excel で生成"""
+def create_excel_report(inspection_data, photo_bytes, writer_name, reviewer_name, inspector_id, lot_no, in_no, inspection_date):
+    """検査結果を Excel で生成（写真埋め込み対応）"""
     try:
         wb = openpyxl.Workbook()
         ws = wb.active
@@ -170,17 +170,25 @@ def create_excel_report(inspection_data, writer_name, reviewer_name, inspector_i
         ws['A7'] = "確認者"
         ws['B7'] = reviewer_name
         ws['A8'] = "検査日"
-        ws['B8'] = inspection_date
+        ws['B8'] = str(inspection_date)
         
-        # ========== 検査項目 ==========
+        # ========== 検査項目ヘッダー ==========
         ws['A10'] = "No."
         ws['B10'] = "カテゴリ"
         ws['C10'] = "検査項目"
         ws['D10'] = "判定"
+        ws['E10'] = "写真"
         
-        for cell in ['A10', 'B10', 'C10', 'D10']:
+        for cell in ['A10', 'B10', 'C10', 'D10', 'E10']:
             ws[cell].font = Font(bold=True)
             ws[cell].fill = PatternFill(start_color="D3D3D3", end_color="D3D3D3", fill_type="solid")
+        
+        # 列幅設定
+        ws.column_dimensions['A'].width = 6
+        ws.column_dimensions['B'].width = 15
+        ws.column_dimensions['C'].width = 50
+        ws.column_dimensions['D'].width = 10
+        ws.column_dimensions['E'].width = 20
         
         row = 11
         for idx, (item_id, data) in enumerate(inspection_data.items(), 1):
@@ -188,6 +196,37 @@ def create_excel_report(inspection_data, writer_name, reviewer_name, inspector_i
             ws[f'B{row}'] = data['category']
             ws[f'C{row}'] = data['description']
             ws[f'D{row}'] = "合格" if data.get('pass') else "不合格"
+            
+            # 写真があれば埋め込み
+            if item_id in photo_bytes and photo_bytes[item_id]:
+                try:
+                    img_data = BytesIO(photo_bytes[item_id])
+                    img = PILImage.open(img_data)
+                    
+                    # 画像をリサイズ（幅100pxに）
+                    max_width = 100
+                    ratio = max_width / img.width
+                    new_height = int(img.height * ratio)
+                    img = img.resize((max_width, new_height))
+                    
+                    # BytesIOに保存
+                    img_buffer = BytesIO()
+                    img.save(img_buffer, format='PNG')
+                    img_buffer.seek(0)
+                    
+                    # Excelに埋め込み
+                    xl_img = XLImage(img_buffer)
+                    ws.add_image(xl_img, f'E{row}')
+                    
+                    # 行の高さを調整
+                    ws.row_dimensions[row].height = new_height * 0.75
+                    
+                    ws[f'E{row}'] = ""
+                except Exception as img_error:
+                    ws[f'E{row}'] = "写真あり"
+            else:
+                ws[f'E{row}'] = "-"
+            
             row += 1
         
         # メモリに保存
@@ -200,15 +239,14 @@ def create_excel_report(inspection_data, writer_name, reviewer_name, inspector_i
         st.error(f"❌ Excel 作成エラー: {e}")
         return None
 
-def send_email(recipient_emails, subject, body, excel_data, filename):
+def send_email_smtp(recipient_emails, subject, body, excel_data, filename):
     """
     SMTP 経由でメール送信（Excel 添付）
-    【修正】日本語ファイル名のエンコード対応
     """
     try:
         # Secrets から SMTP 設定を取得
         smtp_server = st.secrets.get("SMTP_SERVER")
-        smtp_port = int(st.secrets.get("SMTP_PORT", 587))
+        smtp_port = st.secrets.get("SMTP_PORT", "587")
         smtp_email = st.secrets.get("SMTP_EMAIL")
         smtp_password = st.secrets.get("SMTP_PASSWORD")
         
@@ -224,32 +262,35 @@ def send_email(recipient_emails, subject, body, excel_data, filename):
             """)
             return False
         
+        # 全角を半角に変換
+        smtp_email = normalize_email(smtp_email)
+        recipient_emails = [normalize_email(e) for e in recipient_emails]
+        
         # メッセージ作成
         msg = MIMEMultipart()
         msg['From'] = smtp_email
         msg['To'] = ', '.join(recipient_emails)
-        # 【修正】件名を UTF-8 でエンコード
         msg['Subject'] = Header(subject, 'utf-8')
         
         # メール本文（UTF-8）
         msg.attach(MIMEText(body, 'plain', 'utf-8'))
         
-        # 【修正】Excel を添付（日本語ファイル名対応）
-        part = MIMEBase('application', 'octet-stream')
-        part.set_payload(excel_data.getvalue())
+        # Excel を添付
+        part = MIMEBase('application', 'vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        excel_data.seek(0)
+        part.set_payload(excel_data.read())
         encoders.encode_base64(part)
         
-        # 【修正】RFC 2231 形式で日本語ファイル名をエンコード
-        encoded_filename = filename.encode('utf-8')
+        # ASCII文字のみのファイル名を使用
         part.add_header(
             'Content-Disposition',
             'attachment',
-            filename=('utf-8', '', filename)
+            filename=filename
         )
         msg.attach(part)
         
         # メール送信
-        with smtplib.SMTP(smtp_server, smtp_port) as server:
+        with smtplib.SMTP(smtp_server, int(smtp_port)) as server:
             server.starttls()
             server.login(smtp_email, smtp_password)
             server.send_message(msg)
@@ -263,7 +304,7 @@ def send_email(recipient_emails, subject, body, excel_data, filename):
         st.error(f"❌ SMTP エラー: {e}")
         return False
     except Exception as e:
-        st.error(f"❌ メール送信エラー: {e}")
+        st.error(f"❌ メール送信エラー: {type(e).__name__}: {e}")
         return False
 
 # ========== 【 UI・ページレイアウト 】==========
@@ -350,12 +391,14 @@ else:
                     )
                     
                     if photo:
-                        photo_path = save_photo(photo, item['id'])
-                        if photo_path:
-                            st.session_state.uploaded_photos[item['id']] = photo_path
-                            st.success(f"✅ 写真保存：{os.path.basename(photo_path)}")
-                            img = PILImage.open(photo)
-                            st.image(img, width=200)
+                        # 写真データをバイトで保存
+                        photo_data = photo.getvalue()
+                        st.session_state.photo_bytes[item['id']] = photo_data
+                        st.session_state.uploaded_photos[item['id']] = photo.name
+                        st.success(f"✅ 写真保存：{photo.name}")
+                        
+                        img = PILImage.open(BytesIO(photo_data))
+                        st.image(img, width=200)
                 
                 st.divider()
     
@@ -377,7 +420,7 @@ else:
                 st.metric("不合格項目", failed)
             
             with col3:
-                photos = len(st.session_state.uploaded_photos)
+                photos = len(st.session_state.photo_bytes)
                 st.metric("写真添付数", photos)
             
             with col4:
@@ -394,7 +437,7 @@ else:
                     'カテゴリ': data['category'],
                     '検査項目': data['description'][:50],
                     '判定': "✅ 可" if data['pass'] else "❌ 否",
-                    '写真': "📷 あり" if item_id in st.session_state.uploaded_photos else "なし"
+                    '写真': "📷 あり" if item_id in st.session_state.photo_bytes else "なし"
                 })
             
             result_table = pd.DataFrame(result_df)
@@ -409,12 +452,13 @@ else:
                 if writer_name and reviewer_name:
                     excel_data = create_excel_report(
                         st.session_state.inspection_data,
+                        st.session_state.photo_bytes,
                         writer_name, reviewer_name, inspector_id,
                         lot_no, in_no, inspection_date
                     )
                     if excel_data:
                         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        filename = f"inspection_result_{timestamp}.xlsx"
+                        filename = f"inspection_{timestamp}.xlsx"
                         st.session_state.excel_data = excel_data
                         st.session_state.excel_filename = filename
                         
@@ -424,7 +468,7 @@ else:
                             file_name=filename,
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                         )
-                        st.success(f"✅ Excel 生成完了：{filename}")
+                        st.success(f"✅ Excel 生成完了（写真埋め込み済み）：{filename}")
                 else:
                     st.error("❌ 作業者名と確認者名を選択してください")
             
@@ -436,34 +480,38 @@ else:
             if selected_emails and st.session_state.excel_data:
                 st.info(f"📬 送信先：{', '.join(selected_emails)}")
                 
-                if st.button("📮 検査結果をメール送信", use_container_width=True):
+                if st.button("📮 検査結果をメール送信", use_container_width=True, key="send_email_btn"):
                     with st.spinner("📧 メール送信中..."):
                         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        filename = f"inspection_result_{timestamp}.xlsx"
+                        filename = f"inspection_{timestamp}.xlsx"
                         
                         subject = f"Inspection Result - {in_no} / {lot_no}"
                         body = f"""
 入荷検査が完了しました。
 
 【検査情報】
-検査ID：{inspector_id}
-IN.NO：{in_no}
-ロットNO：{lot_no}
-作業者：{writer_name}
-確認者：{reviewer_name}
-検査日：{inspection_date}
+検査ID: {inspector_id}
+IN.NO: {in_no}
+ロットNO: {lot_no}
+作業者: {writer_name}
+確認者: {reviewer_name}
+検査日: {inspection_date}
 
 【結果】
-合格項目：{sum(1 for v in st.session_state.inspection_data.values() if v.get('pass'))}件
-不合格項目：{len(st.session_state.inspection_data) - sum(1 for v in st.session_state.inspection_data.values() if v.get('pass'))}件
+合格項目: {passed}件
+不合格項目: {failed}件
 
 詳細は添付の Excel ファイルをご確認ください。
+写真も Excel 内に埋め込まれています。
 
 ---
-入荷検査フォーム v3.1
+入荷検査フォーム v3.2
 """
                         
-                        success = send_email(
+                        # Excelデータをリセット
+                        st.session_state.excel_data.seek(0)
+                        
+                        success = send_email_smtp(
                             selected_emails,
                             subject,
                             body,
@@ -473,8 +521,6 @@ IN.NO：{in_no}
                         
                         if success:
                             st.success(f"✅ メール送信完了！\n送信先：{', '.join(selected_emails)}")
-                        else:
-                            st.error("❌ メール送信に失敗しました")
             
             elif not selected_emails:
                 st.info("📧 メール送信をご希望の場合は、サイドバーで送信先を選択してください")
@@ -485,4 +531,4 @@ IN.NO：{in_no}
             st.info("ℹ️ 検査項目に回答してから「確認・送信」タブをご覧ください")
 
 st.divider()
-st.caption("入荷検査フォーム v3.1")
+st.caption("入荷検査フォーム v3.2 | 写真埋め込み対応版")
