@@ -79,14 +79,27 @@ def load_manual():
         
         items = []
         for row_idx, row in enumerate(ws.iter_rows(min_row=11, max_row=45, values_only=False), 1):
+            
+            # 1. 特定の行番号(30, 31)を除外
+            if row_idx in [30, 31]:
+                continue
+
             category_cell = row[0]
             description_cell = row[3]
+            
+            # 値を文字列として取得（判定用）
+            cat_text = str(category_cell.value or "")
+
+            # ▼▼▼▼▼ 追加箇所: 「作成部署」「作成者」が含まれていたら除外 ▼▼▼▼▼
+            if "作成部署" in cat_text or "作成者" in cat_text:
+                continue
+            # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
             
             if category_cell.value or description_cell.value:
                 category = category_cell.value or ""
                 description = description_cell.value or ""
                 
-                if description.strip():
+                if str(description).strip():
                     items.append({
                         'id': f"item_{row_idx}",
                         'category': str(category).strip(),
@@ -95,10 +108,10 @@ def load_manual():
                     })
         
         return items
-    except Exception as e:
-        st.error(f"❌ マニュアル読込エラー: {e}")
-        return []
 
+    except Exception as e:
+        print(f"エラーが発生しました: {e}")
+        return []
 def load_masters():
     """検査者マスター Excel を読み込み"""
     try:
@@ -466,3 +479,4 @@ IN.NO：{in_no}
 
 st.divider()
 st.caption("入荷検査フォーム v3.0 | SMTP メール送信完装備版 | 小泉進次郎大臣後押し版")
+
