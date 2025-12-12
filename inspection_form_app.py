@@ -87,11 +87,19 @@ def load_manual():
             category_cell = row[0]
             description_cell = row[3]
             
-            # 値を文字列として取得（判定用）
+            # 値を文字列として取得
             cat_text = str(category_cell.value or "")
+            
+            # ▼▼▼▼▼ 修正箇所: 空白を削除し、除外キーワードを厳密にチェックする ▼▼▼▼▼
+            # 前後の空白とコロンを削除して、除外キーワードと完全に一致するか確認する
+            cleaned_cat_text = cat_text.strip().replace("：", "").replace(":", "")
 
-            # ▼▼▼▼▼ 追加箇所: 「作成部署」「作成者」が含まれていたら除外 ▼▼▼▼▼
-            if "作成部署" in cat_text or "作成者" in cat_text:
+            # 除外キーワードリスト
+            EXCLUDE_KEYWORDS = ["作成部署", "作成者"]
+
+            # cleaned_cat_text が除外キーワードのいずれかを含む、または完全に一致する場合にcontinue
+            if cleaned_cat_text in EXCLUDE_KEYWORDS or \
+               any(keyword in cat_text for keyword in EXCLUDE_KEYWORDS): 
                 continue
             # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
             
@@ -99,6 +107,7 @@ def load_manual():
                 category = category_cell.value or ""
                 description = description_cell.value or ""
                 
+                # descriptionが空でなければ追加（このチェックは既存のロジックを維持）
                 if str(description).strip():
                     items.append({
                         'id': f"item_{row_idx}",
@@ -109,6 +118,9 @@ def load_manual():
         
         return items
 
+    except Exception as e:
+        print(f"エラーが発生しました: {e}")
+        return []
     except Exception as e:
         print(f"エラーが発生しました: {e}")
         return []
@@ -479,4 +491,5 @@ IN.NO：{in_no}
 
 st.divider()
 st.caption("入荷検査フォーム v3.0 | SMTP メール送信完装備版 | 小泉進次郎大臣後押し版")
+
 
