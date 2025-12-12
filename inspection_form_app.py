@@ -2,11 +2,11 @@
 ╔════════════════════════════════════════════════════════════════════════╗
 ║                    入荷検査フォーム システム                             ║
 ║                                                                        ║
-║  バージョン: v3.2                                                       ║
-║  【v3.2 修正内容】                                                     ║
-║  ✅ 全角文字を自動的に半角に変換                                        ║
-║  ✅ 写真をExcelに埋め込み                                               ║
-║  ✅ メール送信のエンコード完全対応                                      ║
+║  バージョン: v3.3                                                       ║
+║  【v3.3 修正内容】                                                     ║
+║  ✅ 元のマニュアルフォーマットに直接書き込み                            ║
+║  ✅ 「□可　□否」→「☑可」「☑否」に書き換え                            ║
+║  ✅ 写真は別シートにカテゴリ別で配置                                    ║
 ║                                                                        ║
 ╚════════════════════════════════════════════════════════════════════════╝
 """
@@ -14,7 +14,7 @@
 import streamlit as st
 import pandas as pd
 import openpyxl
-from openpyxl.styles import Font, PatternFill, Alignment
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.drawing.image import Image as XLImage
 from datetime import datetime
 import json
@@ -29,6 +29,8 @@ from pathlib import Path
 from PIL import Image as PILImage
 from io import BytesIO
 import unicodedata
+import copy
+import re
 
 # ========== 【 設定・定数 】==========
 MANUAL_FILE = "manual.xlsx"
@@ -56,16 +58,13 @@ def normalize_text(text):
     """全角英数字・記号を半角に変換"""
     if text is None:
         return ""
-    # NFKC正規化で全角→半角変換
     return unicodedata.normalize('NFKC', str(text))
 
 def normalize_email(email):
     """メールアドレスの全角文字を半角に変換"""
     if email is None:
         return ""
-    # 全角→半角変換
     normalized = unicodedata.normalize('NFKC', str(email))
-    # 余分な空白を除去
     normalized = normalized.strip().replace(" ", "").replace("　", "")
     return normalized
 
@@ -115,11 +114,14 @@ def load_manual():
                 description = description_cell.value or ""
                 
                 if str(description).strip():
+                    # 実際のExcel行番号を保存（min_row=11なので、row_idx + 10）
+                    actual_row = row_idx + 10
                     items.append({
                         'id': f"item_{row_idx}",
                         'category': str(category).strip(),
                         'description': str(description).strip(),
-                        'row': row_idx
+                        'row': row_idx,
+                        'excel_row': actual_row
                     })
         
         return items
@@ -132,7 +134,6 @@ def load_masters():
     """検査者マスター Excel を読み込み"""
     try:
         df = pd.read_excel(MASTER_FILE, sheet_name="検査者一覧")
-        # メールアドレスを正規化
         if 'メールアドレス' in df.columns:
             df['メールアドレス'] = df['メールアドレス'].apply(normalize_email)
         return df
@@ -148,86 +149,128 @@ def save_config(emails):
     except Exception as e:
         st.warning(f"⚠️ 設定保存エラー: {e}")
 
-def create_excel_report(inspection_data, photo_bytes, writer_name, reviewer_name, inspector_id, lot_no, in_no, inspection_date):
-    """検査結果を Excel で生成（写真埋め込み対応）"""
+def create_excel_report(inspection_data, photo_bytes, manual_items, writer_name, reviewer_name, inspector_id, lot_no, in_no, inspection_date):
+    """
+    元のマニュアルフォーマットに検査結果を書き込み
+    写真は別シートに配置
+    """
     try:
-        wb = openpyxl.Workbook()
-        ws = wb.active
-        ws.title = "検査結果"
+        # 元のマニュアルを読み込み
+        wb = openpyxl.load_workbook(MANUAL_FILE)
+        ws = wb.worksheets[0]
         
-        # ========== ヘッダー情報 ==========
-        ws['A1'] = "入荷検査結果"
-        ws['A1'].font = Font(bold=True, size=14)
-        
-        ws['A3'] = "検査ID"
-        ws['B3'] = inspector_id
-        ws['A4'] = "IN.NO"
+        # ========== ヘッダー情報を書き込み ==========
+        # IN.no (B4セル付近を探す)
         ws['B4'] = in_no
-        ws['A5'] = "ロットNO"
-        ws['B5'] = lot_no
-        ws['A6'] = "作業者"
-        ws['B6'] = writer_name
-        ws['A7'] = "確認者"
-        ws['B7'] = reviewer_name
-        ws['A8'] = "検査日"
-        ws['B8'] = str(inspection_date)
+        # OR.no (O4セル付近)
+        ws['O4'] = ""  # OR.noがあれば
+        # 本体S/N (B5セル付近)
+        ws['B5'] = inspector_id
+        # ロットNo (O5セル付近)
+        ws['O5'] = lot_no
+        # 入荷日 (B6セル付近)
+        ws['B6'] = str(inspection_date)
+        # 検査日 (O6セル付近)
+        ws['O6'] = str(inspection_date)
         
-        # ========== 検査項目ヘッダー ==========
-        ws['A10'] = "No."
-        ws['B10'] = "カテゴリ"
-        ws['C10'] = "検査項目"
-        ws['D10'] = "判定"
-        ws['E10'] = "写真"
+        # 作業者印・確認者印 (U1, W1付近)
+        # 位置は元のフォーマットに合わせて調整が必要
         
-        for cell in ['A10', 'B10', 'C10', 'D10', 'E10']:
-            ws[cell].font = Font(bold=True)
-            ws[cell].fill = PatternFill(start_color="D3D3D3", end_color="D3D3D3", fill_type="solid")
+        # ========== 検査結果を書き込み ==========
+        # V, W, X, Y列に「□可　　　□否」があるので、結果に応じて書き換え
         
-        # 列幅設定
-        ws.column_dimensions['A'].width = 6
-        ws.column_dimensions['B'].width = 15
-        ws.column_dimensions['C'].width = 50
-        ws.column_dimensions['D'].width = 10
-        ws.column_dimensions['E'].width = 20
-        
-        row = 11
-        for idx, (item_id, data) in enumerate(inspection_data.items(), 1):
-            ws[f'A{row}'] = idx
-            ws[f'B{row}'] = data['category']
-            ws[f'C{row}'] = data['description']
-            ws[f'D{row}'] = "合格" if data.get('pass') else "不合格"
+        for item in manual_items:
+            item_id = item['id']
+            excel_row = item['excel_row']
             
-            # 写真があれば埋め込み
-            if item_id in photo_bytes and photo_bytes[item_id]:
-                try:
-                    img_data = BytesIO(photo_bytes[item_id])
-                    img = PILImage.open(img_data)
-                    
-                    # 画像をリサイズ（幅100pxに）
-                    max_width = 100
-                    ratio = max_width / img.width
-                    new_height = int(img.height * ratio)
-                    img = img.resize((max_width, new_height))
-                    
-                    # BytesIOに保存
-                    img_buffer = BytesIO()
-                    img.save(img_buffer, format='PNG')
-                    img_buffer.seek(0)
-                    
-                    # Excelに埋め込み
-                    xl_img = XLImage(img_buffer)
-                    ws.add_image(xl_img, f'E{row}')
-                    
-                    # 行の高さを調整
-                    ws.row_dimensions[row].height = new_height * 0.75
-                    
-                    ws[f'E{row}'] = ""
-                except Exception as img_error:
-                    ws[f'E{row}'] = "写真あり"
-            else:
-                ws[f'E{row}'] = "-"
+            if item_id in inspection_data:
+                is_pass = inspection_data[item_id].get('pass', True)
+                
+                # V列（22列目）の内容を確認して書き換え
+                # 元のセルを探す（V列 = 22）
+                for col in range(21, 26):  # U, V, W, X, Y列をチェック
+                    cell = ws.cell(row=excel_row, column=col)
+                    if cell.value:
+                        cell_value = str(cell.value)
+                        if '□可' in cell_value or '□否' in cell_value:
+                            if is_pass:
+                                # □可 → ☑可、□否 → □否
+                                new_value = cell_value.replace('□可', '☑可')
+                            else:
+                                # □可 → □可、□否 → ☑否
+                                new_value = cell_value.replace('□否', '☑否')
+                            cell.value = new_value
+                            break
+        
+        # ========== 写真シートを作成 ==========
+        if photo_bytes:
+            # 新しいシートを作成
+            ws_photo = wb.create_sheet(title="検査写真")
             
-            row += 1
+            # ヘッダー
+            ws_photo['A1'] = "検査写真一覧"
+            ws_photo['A1'].font = Font(bold=True, size=16)
+            ws_photo.merge_cells('A1:D1')
+            
+            ws_photo['A3'] = "No."
+            ws_photo['B3'] = "カテゴリ"
+            ws_photo['C3'] = "検査項目"
+            ws_photo['D3'] = "写真"
+            
+            for cell in ['A3', 'B3', 'C3', 'D3']:
+                ws_photo[cell].font = Font(bold=True)
+                ws_photo[cell].fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+                ws_photo[cell].font = Font(bold=True, color="FFFFFF")
+            
+            # 列幅設定
+            ws_photo.column_dimensions['A'].width = 6
+            ws_photo.column_dimensions['B'].width = 15
+            ws_photo.column_dimensions['C'].width = 40
+            ws_photo.column_dimensions['D'].width = 30
+            
+            row = 4
+            photo_count = 0
+            
+            for idx, item in enumerate(manual_items):
+                item_id = item['id']
+                
+                if item_id in photo_bytes and photo_bytes[item_id]:
+                    photo_count += 1
+                    
+                    ws_photo[f'A{row}'] = photo_count
+                    ws_photo[f'B{row}'] = item['category']
+                    ws_photo[f'C{row}'] = item['description'][:50]
+                    
+                    try:
+                        # 画像を処理
+                        img_data = BytesIO(photo_bytes[item_id])
+                        img = PILImage.open(img_data)
+                        
+                        # 画像をリサイズ（幅150pxに）
+                        max_width = 150
+                        ratio = max_width / img.width
+                        new_height = int(img.height * ratio)
+                        img = img.resize((max_width, new_height))
+                        
+                        # BytesIOに保存
+                        img_buffer = BytesIO()
+                        img.save(img_buffer, format='PNG')
+                        img_buffer.seek(0)
+                        
+                        # Excelに埋め込み
+                        xl_img = XLImage(img_buffer)
+                        ws_photo.add_image(xl_img, f'D{row}')
+                        
+                        # 行の高さを調整
+                        ws_photo.row_dimensions[row].height = max(new_height * 0.75, 100)
+                        
+                    except Exception as img_error:
+                        ws_photo[f'D{row}'] = f"写真読込エラー: {img_error}"
+                    
+                    row += 1
+            
+            if photo_count == 0:
+                ws_photo['A4'] = "写真はありません"
         
         # メモリに保存
         output = BytesIO()
@@ -235,16 +278,16 @@ def create_excel_report(inspection_data, photo_bytes, writer_name, reviewer_name
         output.seek(0)
         
         return output
+        
     except Exception as e:
         st.error(f"❌ Excel 作成エラー: {e}")
+        import traceback
+        st.error(traceback.format_exc())
         return None
 
 def send_email_smtp(recipient_emails, subject, body, excel_data, filename):
-    """
-    SMTP 経由でメール送信（Excel 添付）
-    """
+    """SMTP 経由でメール送信（Excel 添付）"""
     try:
-        # Secrets から SMTP 設定を取得
         smtp_server = st.secrets.get("SMTP_SERVER")
         smtp_port = st.secrets.get("SMTP_PORT", "587")
         smtp_email = st.secrets.get("SMTP_EMAIL")
@@ -262,26 +305,21 @@ def send_email_smtp(recipient_emails, subject, body, excel_data, filename):
             """)
             return False
         
-        # 全角を半角に変換
         smtp_email = normalize_email(smtp_email)
         recipient_emails = [normalize_email(e) for e in recipient_emails]
         
-        # メッセージ作成
         msg = MIMEMultipart()
         msg['From'] = smtp_email
         msg['To'] = ', '.join(recipient_emails)
         msg['Subject'] = Header(subject, 'utf-8')
         
-        # メール本文（UTF-8）
         msg.attach(MIMEText(body, 'plain', 'utf-8'))
         
-        # Excel を添付
         part = MIMEBase('application', 'vnd.openxmlformats-officedocument.spreadsheetml.sheet')
         excel_data.seek(0)
         part.set_payload(excel_data.read())
         encoders.encode_base64(part)
         
-        # ASCII文字のみのファイル名を使用
         part.add_header(
             'Content-Disposition',
             'attachment',
@@ -289,7 +327,6 @@ def send_email_smtp(recipient_emails, subject, body, excel_data, filename):
         )
         msg.attach(part)
         
-        # メール送信
         with smtplib.SMTP(smtp_server, int(smtp_port)) as server:
             server.starttls()
             server.login(smtp_email, smtp_password)
@@ -341,7 +378,7 @@ with st.sidebar:
         selected_emails = []
     
     st.subheader("📋 検査情報")
-    inspector_id = st.text_input("検査ID", value=datetime.now().strftime("%Y%m%d_%H%M%S"))
+    inspector_id = st.text_input("本体S/N", placeholder="例: SN12345")
     in_no = st.text_input("IN.NO", placeholder="例: IN001")
     lot_no = st.text_input("ロットNO", placeholder="例: LOT001")
     inspection_date = st.date_input("検査日", value=datetime.now())
@@ -391,7 +428,6 @@ else:
                     )
                     
                     if photo:
-                        # 写真データをバイトで保存
                         photo_data = photo.getvalue()
                         st.session_state.photo_bytes[item['id']] = photo_data
                         st.session_state.uploaded_photos[item['id']] = photo.name
@@ -408,7 +444,6 @@ else:
         st.caption("①Excel を確認 → ②メール送信 の流れで進めてください")
         
         if st.session_state.inspection_data:
-            # --------- 統計情報 ---------
             col1, col2, col3, col4 = st.columns(4)
             
             with col1:
@@ -424,11 +459,10 @@ else:
                 st.metric("写真添付数", photos)
             
             with col4:
-                st.metric("検査ID", inspector_id)
+                st.metric("本体S/N", inspector_id if inspector_id else "-")
             
             st.divider()
             
-            # --------- 検査結果一覧 ---------
             st.subheader("📊 検査結果一覧")
             result_df = []
             for idx, (item_id, data) in enumerate(st.session_state.inspection_data.items(), 1):
@@ -447,12 +481,14 @@ else:
             
             # ========== 【 ステップ 1：Excel 生成・ダウンロード 】==========
             st.subheader("💾 ステップ 1️⃣：Excel 生成・確認")
+            st.caption("元のマニュアルフォーマットに結果を書き込み、写真は別シートに配置します")
             
             if st.button("📊 Excel を生成・ダウンロード", use_container_width=True):
                 if writer_name and reviewer_name:
                     excel_data = create_excel_report(
                         st.session_state.inspection_data,
                         st.session_state.photo_bytes,
+                        manual_items,
                         writer_name, reviewer_name, inspector_id,
                         lot_no, in_no, inspection_date
                     )
@@ -468,7 +504,8 @@ else:
                             file_name=filename,
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                         )
-                        st.success(f"✅ Excel 生成完了（写真埋め込み済み）：{filename}")
+                        st.success(f"✅ Excel 生成完了：{filename}")
+                        st.info("📋 シート1: 検査結果（元のフォーマット）\n📷 シート2: 検査写真")
                 else:
                     st.error("❌ 作業者名と確認者名を選択してください")
             
@@ -478,7 +515,7 @@ else:
             st.subheader("📧 ステップ 2️⃣：メール送信")
             
             if selected_emails and st.session_state.excel_data:
-                st.info(f"📬 送信先：{', '.join(selected_emails)}")
+                st.info(f"📬 送信先： {len(selected_emails)}件 選択済み")
                 
                 if st.button("📮 検査結果をメール送信", use_container_width=True, key="send_email_btn"):
                     with st.spinner("📧 メール送信中..."):
@@ -490,7 +527,7 @@ else:
 入荷検査が完了しました。
 
 【検査情報】
-検査ID: {inspector_id}
+本体S/N: {inspector_id}
 IN.NO: {in_no}
 ロットNO: {lot_no}
 作業者: {writer_name}
@@ -502,13 +539,13 @@ IN.NO: {in_no}
 不合格項目: {failed}件
 
 詳細は添付の Excel ファイルをご確認ください。
-写真も Excel 内に埋め込まれています。
+- シート1: 検査結果（元のフォーマット）
+- シート2: 検査写真
 
 ---
-入荷検査フォーム v3.2
+入荷検査フォーム v3.3
 """
                         
-                        # Excelデータをリセット
                         st.session_state.excel_data.seek(0)
                         
                         success = send_email_smtp(
@@ -520,7 +557,7 @@ IN.NO: {in_no}
                         )
                         
                         if success:
-                            st.success(f"✅ メール送信完了！\n送信先：{', '.join(selected_emails)}")
+                            st.success(f"✅ メール送信完了！")
             
             elif not selected_emails:
                 st.info("📧 メール送信をご希望の場合は、サイドバーで送信先を選択してください")
@@ -531,4 +568,4 @@ IN.NO: {in_no}
             st.info("ℹ️ 検査項目に回答してから「確認・送信」タブをご覧ください")
 
 st.divider()
-st.caption("入荷検査フォーム v3.2 | 写真埋め込み対応版")
+st.caption("入荷検査フォーム v3.3 | 元フォーマット対応版")
