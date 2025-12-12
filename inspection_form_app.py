@@ -2,35 +2,13 @@
 ╔════════════════════════════════════════════════════════════════════════╗
 ║                    入荷検査フォーム システム                             ║
 ║                                                                        ║
-║  バージョン: v3.0 (SMTP メール送信機能完装備版)                         ║
+║  バージョン: v3.1 (バグ修正版)                                          ║
 ║  用途: 製品入荷検査の完全自動化・メール配信                              ║
 ║  開発: Claude AI × ユーザー設計                                        ║
-║  応援: 小泉進次郎大臣、高市早苗総理、小野田紀美大臣                      ║
 ║                                                                        ║
-║  【完全ワークフロー】                                                  ║
-║  1. 検査項目入力                                                      ║
-║  2. Excel生成・確認（ダウンロード）                                     ║
-║  3. メール送信（自動 Excel 添付）                                      ║
-║                                                                        ║
-║  【実装機能】                                                          ║
-║  ✅ Excel マニュアル自動読込                                           ║
-║  ✅ 検査結果の可/否 選択                                               ║
-║  ✅ 写真アップロード（iPad カメラ対応）                                ║
-║  ✅ Excel自動生成＆ダウンロード                                         ║
-║  ✅ SMTP 経由メール送信（複数宛先対応）                                ║
-║  ✅ Excel を添付送信                                                  ║
-║  ✅ セキュリティ（Secrets 管理）                                       ║
-║  ✅ エラーハンドリング完備                                              ║
-║                                                                        ║
-║  【セットアップ】                                                      ║
-║  1. Streamlit Cloud の「Secrets」に以下を設定                          ║
-║     SMTP_SERVER=smtp.gmail.com                                       ║
-║     SMTP_PORT=587                                                    ║
-║     SMTP_EMAIL=your-email@gmail.com                                 ║
-║     SMTP_PASSWORD=your-app-password                                 ║
-║                                                                        ║
-║  2. requirements.txt に追加（必要な場合）                              ║
-║     python-dotenv                                                    ║
+║  【v3.1 修正内容】                                                     ║
+║  ✅ 「作製部署」「作成者」の除外ロジック修正                            ║
+║  ✅ メール送信時のエンコードエラー修正                                  ║
 ║                                                                        ║
 ╚════════════════════════════════════════════════════════════════════════╝
 """
@@ -47,6 +25,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email.mime.text import MIMEText
 from email import encoders
+from email.header import Header
 from pathlib import Path
 from PIL import Image as PILImage
 from io import BytesIO
@@ -83,43 +62,45 @@ def load_manual():
             # 1. 特定の行番号(30, 31)を除外
             if row_idx in [30, 31]:
                 continue
-            
-            # ▼▼▼▼▼ 修正箇所: any() でシンプルかつ確実に除外するロジック ▼▼▼▼▼
-            
-            # 1. その行のすべてのセルを結合して一つの文字列にする
-            # (Noneのセルは空文字列にして結合し、例外を防ぐ)
-            row_content_list = [str(cell.value or "") for cell in row]
-            row_content_raw = " ".join(row_content_list)
-
-            # 2. 徹底的なクリーニング (スペース、コロンを全て削除し、小文字化)
-            cleaned_row_content = (
-                row_content_raw
-                .replace(" ", "")  # 半角スペース除去
-                .replace("　", "") # 全角スペース除去
-                .replace("：", "") # 全角コロン除去
-                .replace(":", "")  # 半角コロン除去
-                .strip()
-                .lower()
-            )
-
-            # 3. 除外キーワードリスト
-            EXCLUDE_KEYWORDS_CLEAN = ["作成部署", "作成者"]
-            
-            # クリーニングした文字列の中にいずれかのキーワードが含まれていれば、次の行へスキップ
-            if any(keyword in cleaned_row_content for keyword in EXCLUDE_KEYWORDS_CLEAN):
-                continue # <-- これがメインループを次の行に進める
-
-            # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
 
             category_cell = row[0]
             description_cell = row[3]
             
-            # 検査項目として有効なデータがあるかチェック（既存ロジック）
+            # ▼▼▼▼▼ 修正箇所: 判定ロジックを修正 ▼▼▼▼▼
+            
+            row_content = ""
+            for cell in row:
+                if cell.value is not None:
+                    row_content += str(cell.value).strip() 
+
+            # 【修正】判定キーワード - 「作製部署」と「作成部署」両方対応
+            EXCLUDE_KEYWORDS = ["作製部署", "作成部署", "作成者", "作製者", "制定日", "改訂日", "版数", "承認"]
+            
+            cleaned_row_content = (
+                row_content
+                .replace(" ", "")
+                .replace("　", "")
+                .replace("：", "")
+                .replace(":", "")
+            )
+
+            # 検査項目として不適切な行を判定
+            is_excluded = False
+            for keyword in EXCLUDE_KEYWORDS:
+                if keyword in cleaned_row_content:
+                    is_excluded = True
+                    break
+
+            if is_excluded:
+                continue
+            
+            # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
+            
+            # 検査項目として有効なデータがあるかチェック
             if category_cell.value or description_cell.value:
                 category = category_cell.value or ""
                 description = description_cell.value or ""
                 
-                # descriptionが空でなければ追加
                 if str(description).strip():
                     items.append({
                         'id': f"item_{row_idx}",
@@ -222,17 +203,12 @@ def create_excel_report(inspection_data, writer_name, reviewer_name, inspector_i
 def send_email(recipient_emails, subject, body, excel_data, filename):
     """
     SMTP 経由でメール送信（Excel 添付）
-    
-    【注意】Streamlit Cloud の場合、Secrets に以下を設定：
-    SMTP_SERVER=smtp.gmail.com
-    SMTP_PORT=587
-    SMTP_EMAIL=your-email@gmail.com
-    SMTP_PASSWORD=your-app-password
+    【修正】日本語ファイル名のエンコード対応
     """
     try:
         # Secrets から SMTP 設定を取得
         smtp_server = st.secrets.get("SMTP_SERVER")
-        smtp_port = st.secrets.get("SMTP_PORT", 587)
+        smtp_port = int(st.secrets.get("SMTP_PORT", 587))
         smtp_email = st.secrets.get("SMTP_EMAIL")
         smtp_password = st.secrets.get("SMTP_PASSWORD")
         
@@ -252,16 +228,24 @@ def send_email(recipient_emails, subject, body, excel_data, filename):
         msg = MIMEMultipart()
         msg['From'] = smtp_email
         msg['To'] = ', '.join(recipient_emails)
-        msg['Subject'] = subject
+        # 【修正】件名を UTF-8 でエンコード
+        msg['Subject'] = Header(subject, 'utf-8')
         
-        # メール本文
+        # メール本文（UTF-8）
         msg.attach(MIMEText(body, 'plain', 'utf-8'))
         
-        # Excel を添付
+        # 【修正】Excel を添付（日本語ファイル名対応）
         part = MIMEBase('application', 'octet-stream')
         part.set_payload(excel_data.getvalue())
         encoders.encode_base64(part)
-        part.add_header('Content-Disposition', f'attachment; filename= {filename}')
+        
+        # 【修正】RFC 2231 形式で日本語ファイル名をエンコード
+        encoded_filename = filename.encode('utf-8')
+        part.add_header(
+            'Content-Disposition',
+            'attachment',
+            filename=('utf-8', '', filename)
+        )
         msg.attach(part)
         
         # メール送信
@@ -430,8 +414,9 @@ else:
                     )
                     if excel_data:
                         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        filename = f"検査結果_{timestamp}.xlsx"
+                        filename = f"inspection_result_{timestamp}.xlsx"
                         st.session_state.excel_data = excel_data
+                        st.session_state.excel_filename = filename
                         
                         st.download_button(
                             label="📥 Excel をダウンロード",
@@ -454,9 +439,9 @@ else:
                 if st.button("📮 検査結果をメール送信", use_container_width=True):
                     with st.spinner("📧 メール送信中..."):
                         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        filename = f"検査結果_{timestamp}.xlsx"
+                        filename = f"inspection_result_{timestamp}.xlsx"
                         
-                        subject = f"入荷検査結果 - {in_no} / {lot_no}"
+                        subject = f"Inspection Result - {in_no} / {lot_no}"
                         body = f"""
 入荷検査が完了しました。
 
@@ -475,7 +460,7 @@ IN.NO：{in_no}
 詳細は添付の Excel ファイルをご確認ください。
 
 ---
-入荷検査フォーム v3.0
+入荷検査フォーム v3.1
 """
                         
                         success = send_email(
@@ -500,10 +485,4 @@ IN.NO：{in_no}
             st.info("ℹ️ 検査項目に回答してから「確認・送信」タブをご覧ください")
 
 st.divider()
-st.caption("入荷検査フォーム v3.0 | SMTP メール送信完装備版 | 小泉進次郎大臣後押し版")
-
-
-
-
-
-
+st.caption("入荷検査フォーム v3.1")
