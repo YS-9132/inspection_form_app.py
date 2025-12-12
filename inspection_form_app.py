@@ -90,17 +90,30 @@ def load_manual():
             # 値を文字列として取得
             cat_text = str(category_cell.value or "")
             
-            # ▼▼▼▼▼ 修正箇所: 空白を削除し、除外キーワードを厳密にチェックする ▼▼▼▼▼
-            # 前後の空白とコロンを削除して、除外キーワードと完全に一致するか確認する
-            cleaned_cat_text = cat_text.strip().replace("：", "").replace(":", "")
+            # ▼▼▼▼▼ 最終修正案: 判定ロジックを強化する ▼▼▼▼▼
+            
+            # 1. 全角・半角スペース、コロンを除去し、すべて小文字に統一した文字列を生成
+            cleaned_cat_text = (
+                cat_text
+                .replace(" ", "")  # 半角スペース除去
+                .replace("　", "") # 全角スペース除去
+                .replace("：", "") # 全角コロン除去
+                .replace(":", "")  # 半角コロン除去
+                .strip()           # その他前後の空白を除去
+                .lower()           # 小文字に統一
+            )
 
-            # 除外キーワードリスト
-            EXCLUDE_KEYWORDS = ["作成部署", "作成者"]
-
-            # cleaned_cat_text が除外キーワードのいずれかを含む、または完全に一致する場合にcontinue
-            if cleaned_cat_text in EXCLUDE_KEYWORDS or \
-               any(keyword in cat_text for keyword in EXCLUDE_KEYWORDS): 
+            # 2. 除外キーワードリストを小文字で定義
+            EXCLUDE_KEYWORDS_CLEANED = ["作成部署", "作成者"] 
+            
+            # 3. 徹底的にクリーンアップした文字列が除外キーワードと一致するかチェック
+            if cleaned_cat_text in EXCLUDE_KEYWORDS_CLEANED:
                 continue
+            
+            # (念のため、コロンやスペースがあっても部分的にキーワードが含まれていたら除外する保険も残す)
+            # if "作成部署" in cat_text or "作成者" in cat_text:
+            #     continue 
+            
             # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
             
             if category_cell.value or description_cell.value:
@@ -118,9 +131,6 @@ def load_manual():
         
         return items
 
-    except Exception as e:
-        print(f"エラーが発生しました: {e}")
-        return []
     except Exception as e:
         print(f"エラーが発生しました: {e}")
         return []
@@ -491,5 +501,6 @@ IN.NO：{in_no}
 
 st.divider()
 st.caption("入荷検査フォーム v3.0 | SMTP メール送信完装備版 | 小泉進次郎大臣後押し版")
+
 
 
