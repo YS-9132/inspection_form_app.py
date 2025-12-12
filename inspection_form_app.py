@@ -87,40 +87,42 @@ def load_manual():
             category_cell = row[0]
             description_cell = row[3]
             
-            # 値を文字列として取得
-            cat_text = str(category_cell.value or "")
+            # ▼▼▼▼▼ 修正箇所: 行全体をチェックする ▼▼▼▼▼
             
-            # ▼▼▼▼▼ 最終修正案: 判定ロジックを強化する ▼▼▼▼▼
+            # その行のすべてのセルを結合して一つの文字列にする (row: openpyxl.cell.Cell のタプル)
+            row_content = ""
+            for cell in row:
+                if cell.value is not None:
+                    # セルの値を文字列化し、前後の空白を除去してから結合
+                    row_content += str(cell.value).strip() 
+
+            # 判定キーワードを定義し、全角半角のブレを防ぐためにクリーニング
+            EXCLUDE_KEYWORDS = ["作成部署", "作成者"]
             
-            # 1. 全角・半角スペース、コロンを除去し、すべて小文字に統一した文字列を生成
-            cleaned_cat_text = (
-                cat_text
+            # row_content からスペース、コロンを除去し、すべて小文字に統一
+            cleaned_row_content = (
+                row_content
                 .replace(" ", "")  # 半角スペース除去
                 .replace("　", "") # 全角スペース除去
                 .replace("：", "") # 全角コロン除去
                 .replace(":", "")  # 半角コロン除去
-                .strip()           # その他前後の空白を除去
                 .lower()           # 小文字に統一
             )
 
-            # 2. 除外キーワードリストを小文字で定義
-            EXCLUDE_KEYWORDS_CLEANED = ["作成部署", "作成者"] 
-            
-            # 3. 徹底的にクリーンアップした文字列が除外キーワードと一致するかチェック
-            if cleaned_cat_text in EXCLUDE_KEYWORDS_CLEANED:
-                continue
-            
-            # (念のため、コロンやスペースがあっても部分的にキーワードが含まれていたら除外する保険も残す)
-            # if "作成部署" in cat_text or "作成者" in cat_text:
-            #     continue 
+            # 検査項目として不適切な行を判定
+            for keyword in EXCLUDE_KEYWORDS:
+                # クリーニングしたキーワードが、クリーニングした行の内容に含まれるかチェック
+                if keyword in cleaned_row_content:
+                    continue  # この行はスキップ
             
             # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
             
+            # 検査項目として有効なデータがあるかチェック（既存ロジック）
             if category_cell.value or description_cell.value:
                 category = category_cell.value or ""
                 description = description_cell.value or ""
                 
-                # descriptionが空でなければ追加（このチェックは既存のロジックを維持）
+                # descriptionが空でなければ追加
                 if str(description).strip():
                     items.append({
                         'id': f"item_{row_idx}",
@@ -134,6 +136,7 @@ def load_manual():
     except Exception as e:
         print(f"エラーが発生しました: {e}")
         return []
+        
 def load_masters():
     """検査者マスター Excel を読み込み"""
     try:
@@ -501,6 +504,7 @@ IN.NO：{in_no}
 
 st.divider()
 st.caption("入荷検査フォーム v3.0 | SMTP メール送信完装備版 | 小泉進次郎大臣後押し版")
+
 
 
 
